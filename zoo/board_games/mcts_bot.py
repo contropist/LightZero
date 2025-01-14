@@ -9,12 +9,15 @@ Overview:
     For more details, you can refer to: https://github.com/int8/monte-carlo-tree-search.
 """
 
+import copy
+import os
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
 
 import numpy as np
-from easydict import EasyDict
+from graphviz import Digraph
+
 
 class MCTSNode(ABC):
     """
@@ -39,7 +42,7 @@ class MCTSNode(ABC):
                 The methods of this object implement functionalities such as game state transitions and retrieving game results.
             - parent (:obj:`MCTSNode`):  The parent node of the current node. The parent node is primarily used for backpropagation during the Monte Carlo Tree Search. 
                 For the root node, this parent returns None as it does not have a parent node.
-        """    
+        """
         self.env = env
         self.parent = parent
         self.children = []
@@ -106,7 +109,8 @@ class MCTSNode(ABC):
 
     """
         # Calculate the ucb score for every child node in the list.
-        choices_weights = [(child_node.value / child_node.visit_count) + c_param * np.sqrt((2 * np.log(self.visit_count) / child_node.visit_count)) for child_node in self.children]
+        choices_weights = [(child_node.value / child_node.visit_count) + c_param * np.sqrt(
+            (2 * np.log(self.visit_count) / child_node.visit_count)) for child_node in self.children]
         # Save the best action based on the highest UCB score.
         self.best_action = self.expanded_actions[np.argmax(choices_weights)]
         # Choose the child node which has the highest ucb score.
@@ -124,6 +128,7 @@ class MCTSNode(ABC):
             - action(:obj:`int`): A randomly chosen action from the list of possible actions.
         """
         return possible_actions[np.random.randint(len(possible_actions))]
+
 
 class TwoPlayersMCTSNode(MCTSNode):
     """
@@ -149,9 +154,8 @@ class TwoPlayersMCTSNode(MCTSNode):
     @property
     def legal_actions(self):
         if self._legal_actions is None:
-            self._legal_actions = self.env.legal_actions
+            self._legal_actions = copy.deepcopy(self.env.legal_actions)
         return self._legal_actions
-
 
     @property
     def value(self):
@@ -169,9 +173,11 @@ class TwoPlayersMCTSNode(MCTSNode):
                 - If the parent's current player is player 2, then Q-value = 5 - 10 = -5.
             This way, a higher Q-value for a node indicates a higher win rate for the parent's current player.
         """
-
+        if self.parent == None:
+            return 0
         # Determine the number of wins and losses based on the current player at the parent node.
-        wins, loses = (self._results[1], self._results[-1]) if self.parent.env.current_player == 1 else (self._results[-1], self._results[1])
+        wins, loses = (self._results[1], self._results[-1]) if self.parent.env.current_player == 1 else (
+        self._results[-1], self._results[1])
 
         # Calculate and return the Q-value as the difference between wins and losses.
         return wins - loses
@@ -193,20 +199,19 @@ class TwoPlayersMCTSNode(MCTSNode):
         Returns:
             - node(:obj:`TwoPlayersMCTSNode`): The child node object that has been created.
         """
-        
         # Choose an untried action from the list of legal actions and pop it out. Only untried actions are left in the list.
         action = self.legal_actions.pop()
-        
+
         # The simulate_action() function returns a new environment which resets the board and the current player flag.
         next_simulator_env = self.env.simulate_action(action)
-        
+
         # Create a new node object for the child node and append it to the children list.
         child_node = TwoPlayersMCTSNode(next_simulator_env, parent=self)
         self.children.append(child_node)
-        
+
         # Add the action that has been tried to the expanded_actions list.
         self.expanded_actions.append(action)
-        
+
         # Return the child node object.
         return child_node
 
@@ -305,7 +310,7 @@ class MCTS(object):
                 leaf_node.backpropagate(reward)
                 if time.time() > end_time:
                     break
-        # If simulations number is provided, run the specified number of simulations.
+        # If a simulation number is provided, run the specified number of simulations.
         else:
             for i in range(0, simulations_number):
                 # print('****simlulation-{}****'.format(i))
@@ -316,15 +321,14 @@ class MCTS(object):
                 # print('reward={}\n'.format(reward))
                 # Backpropagate from the leaf node to the root node.
                 leaf_node.backpropagate(reward)
-        # To select best child go for exploitation only.
+        # To select the best child go for exploitation only.
         if best_action_type == "UCB":
             return self.root.best_child(c_param=0.)
-        
+
         else:
             children_visit_counts = [child_node.visit_count for child_node in self.root.children]
             self.root.best_action = self.root.expanded_actions[np.argmax(children_visit_counts)]
             return self.root.children[np.argmax(children_visit_counts)]
-
 
     #
     def _tree_policy(self):
@@ -344,6 +348,11 @@ class MCTS(object):
             else:
                 current_node = current_node.best_child()
         return current_node
+    
+    def print_tree(self, node, indent="*"):
+        print(indent + str(np.array(node.env.board).reshape(6,7)) + str(node.visit_count))
+        for child in node.children:
+            self.print_tree(child, indent + "*")
 
 
 class MCTSBot:
@@ -351,8 +360,8 @@ class MCTSBot:
     Overview:
         A robot which can use MCTS to make decision, choose an action to take.
     """
- 
-    def __init__(self, env, bot_name, num_simulation=10000):
+
+    def __init__(self, env, bot_name, num_simulation=50):
         """
         Overview:
             This function initializes a new instance of the MCTSBot class.
@@ -365,7 +374,7 @@ class MCTSBot:
         self.num_simulation = num_simulation
         self.simulator_env = env
 
-    def get_actions(self, state, player_index, best_action_type = "UCB"):
+    def get_actions(self, state, step, player_index, root=None, num_simulation=None, best_action_type="UCB"):
         """
         Overview:
             This function gets the actions that the MCTS Bot will take.
@@ -378,10 +387,97 @@ class MCTSBot:
         Returns:
             - action (:obj:`int`): The best action that the MCTS Bot will take. 
         """
-        # Every time before make a decision, reset the environment to current environment of the game.
+        # Every time before make a decision, reset the environment to the current environment of the game.
         self.simulator_env.reset(start_player_index=player_index, init_state=state)
-        root = TwoPlayersMCTSNode(self.simulator_env)
+        if root == None:
+            root = TwoPlayersMCTSNode(self.simulator_env)
         # Do the MCTS to find the best action to take.
         mcts = MCTS(root)
-        mcts.best_action(self.num_simulation, best_action_type=best_action_type)
-        return root.best_action
+        if num_simulation == None:
+            child_node = mcts.best_action(self.num_simulation, best_action_type=best_action_type)
+        else:
+            child_node = mcts.best_action(num_simulation, best_action_type=best_action_type)
+        print(root.visit_count)
+        if step%2 == 1:
+            self.plot_simulation_graph(child_node, step)
+        else:
+            self.plot_simulation_graph(root, step)
+        # if step == 3:
+        #     self.plot_simulation_graph(root, step)
+
+        return root.best_action, child_node, int(child_node.visit_count)
+
+    def obtain_tree_topology(self, root, to_play=-1):
+        node_stack = []
+        edge_topology_list = []
+        node_topology_list = []
+        node_id_list = []
+        node_stack.append(root)
+        while len(node_stack) > 0:
+            node = node_stack[-1]
+            node_stack.pop()
+            node_dict = {}
+            node_dict['node_id'] = np.array(node.env.board).reshape(6,7)
+            node_dict['visit_count'] = node.visit_count
+            # node_dict['policy_prior'] = node.prior
+            node_dict['value'] = node.value
+            node_topology_list.append(node_dict)
+
+            # node_id_list.append(node.simulation_index)
+            for child in node.children:
+                # child.parent_simulation_index = node.simulation_index
+                edge_dict = {}
+                edge_dict['parent_id'] = np.array(node.env.board).reshape(6,7)
+                edge_dict['child_id'] = np.array(child.env.board).reshape(6,7)
+                edge_topology_list.append(edge_dict)
+                node_stack.append(child)
+        return edge_topology_list, node_id_list, node_topology_list
+
+    def obtain_child_topology(self, root, to_play=-1):
+            edge_topology_list = []
+            node_topology_list = []
+            node_id_list = []
+            node = root
+            node_dict = {}
+            node_dict['node_id'] = np.array(node.env.board).reshape(6,7)
+            node_dict['visit_count'] = node.visit_count
+            # node_dict['policy_prior'] = node.prior
+            node_dict['value'] = node.value
+            node_topology_list.append(node_dict)
+
+            for child in node.children:
+                # child.parent_simulation_index = node.simulation_index
+                edge_dict = {}
+                edge_dict['parent_id'] = np.array(node.env.board).reshape(6,7)
+                edge_dict['child_id'] = np.array(child.env.board).reshape(6,7)
+                edge_topology_list.append(edge_dict)
+                node_dict = {}
+                node_dict['node_id'] = np.array(child.env.board).reshape(6,7)
+                node_dict['visit_count'] = child.visit_count
+                # node_dict['policy_prior'] = node.prior
+                node_dict['value'] = child.value
+                node_topology_list.append(node_dict)
+            return edge_topology_list, node_id_list, node_topology_list
+
+    def plot_simulation_graph(self, env_root, current_step, type="child", graph_directory=None):
+        if type == "child":
+            edge_topology_list, node_id_list, node_topology_list = self.obtain_child_topology(env_root)
+        elif type == "tree":
+            edge_topology_list, node_id_list, node_topology_list = self.obtain_tree_topology(env_root)
+        dot = Digraph(comment='this is direction')
+        for node_topology in node_topology_list:
+            node_name = str(node_topology['node_id'])
+            label = f"{node_topology['node_id']}, \n visit_count: {node_topology['visit_count']}, \n value: {round(node_topology['value'], 4)}"
+            dot.node(node_name, label=label)
+        for edge_topology in edge_topology_list:
+            parent_id = str(edge_topology['parent_id'])
+            child_id = str(edge_topology['child_id'])
+            label = parent_id + '-' + child_id
+            dot.edge(parent_id, child_id, label=None)
+        if graph_directory is None:
+            graph_directory = './data_visualize/'
+        if not os.path.exists(graph_directory):
+            os.makedirs(graph_directory)
+        graph_path = graph_directory + 'same_num_' + str(current_step) + 'step.gv'
+        dot.format = 'png'
+        dot.render(graph_path, view=False)

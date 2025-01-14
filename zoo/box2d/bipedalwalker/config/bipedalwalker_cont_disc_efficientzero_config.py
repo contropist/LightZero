@@ -9,7 +9,8 @@ evaluator_env_num = 3
 continuous_action_space = False
 each_dim_disc_size = 4  # thus the total discrete action number is 4**4=256
 num_simulations = 50
-update_per_collect = 200
+update_per_collect = None
+replay_ratio = 0.25
 batch_size = 256
 max_env_step = int(5e6)
 reanalyze_ratio = 0.
@@ -18,11 +19,11 @@ reanalyze_ratio = 0.
 # ==============================================================
 
 bipedalwalker_cont_disc_efficientzero_config = dict(
-    exp_name=
-    f'data_sez_ctree/bipedalwalker_cont_disc_efficientzero_ns{num_simulations}_upc{update_per_collect}_rr{reanalyze_ratio}_seed0',
+    exp_name=f'data_sez/bipedalwalker_cont_disc_efficientzero_ns{num_simulations}_upc{update_per_collect}-rr{replay_ratio}_rer{reanalyze_ratio}_seed0',
     env=dict(
         stop_value=int(1e6),
-        env_name='BipedalWalker-v3',
+        env_id='BipedalWalker-v3',
+        env_type='normal',
         manually_discretization=True,
         continuous=False,
         each_dim_disc_size=each_dim_disc_size,
@@ -43,22 +44,25 @@ bipedalwalker_cont_disc_efficientzero_config = dict(
             res_connection_in_dynamics=True,
             norm_type='BN', 
         ),
+        # (str) The path of the pretrained model. If None, the model will be initialized by the default model.
+        model_path=None,
         cuda=True,
         env_type='not_board_games',
         game_segment_length=200,
         update_per_collect=update_per_collect,
         batch_size=batch_size,
         optim_type='Adam',
-        lr_piecewise_constant_decay=False,
+        piecewise_decay_lr_scheduler=False,
         learning_rate=0.003,
         # NOTE: this parameter is important for stability in bipedalwalker.
         grad_clip_value=0.5,
         # NOTE: for continuous gaussian policy, we use the policy_entropy_loss as in the original Sampled MuZero paper.
-        policy_entropy_loss_weight=5e-3,
+        policy_entropy_weight=5e-3,
         num_simulations=num_simulations,
         reanalyze_ratio=reanalyze_ratio,
         n_episode=n_episode,
         eval_freq=int(2e3),
+        replay_ratio=replay_ratio,
         replay_buffer_size=int(1e6),  # the size/capacity of replay_buffer, in the terms of transitions.
         collector_env_num=collector_env_num,
         evaluator_env_num=evaluator_env_num,
@@ -77,10 +81,6 @@ bipedalwalker_cont_disc_efficientzero_create_config = dict(
         type='efficientzero',
         import_names=['lzero.policy.efficientzero'],
     ),
-    collector=dict(
-        type='episode_muzero',
-        import_names=['lzero.worker.muzero_collector'],
-    )
 )
 bipedalwalker_cont_disc_efficientzero_create_config = EasyDict(bipedalwalker_cont_disc_efficientzero_create_config)
 create_config = bipedalwalker_cont_disc_efficientzero_create_config
@@ -98,4 +98,4 @@ if __name__ == "__main__":
         """
         from lzero.entry import train_muzero_with_gym_env as train_muzero
 
-    train_muzero([main_config, create_config], seed=0, max_env_step=max_env_step)
+    train_muzero([main_config, create_config], seed=0, model_path=main_config.policy.model_path, max_env_step=max_env_step)

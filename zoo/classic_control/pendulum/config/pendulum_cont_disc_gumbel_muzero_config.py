@@ -1,6 +1,6 @@
 """
 NOTE: the pendulum_cont_disc in file name means we use the Pendulum-v1 continuous env
-with manually discretitze action space. That is to say, the final action space is discrete.
+with manually discretized action space. That is to say, the final action space is discrete.
 """
 from easydict import EasyDict
 
@@ -20,9 +20,9 @@ reanalyze_ratio = 0
 # ==============================================================
 
 pendulum_disc_gumbel_muzero_config = dict(
-    exp_name=f'data_mz_ctree/pendulum_disc_gumbel_muzero_ns{num_simulations}_upc{update_per_collect}_rr{reanalyze_ratio}_seed0',
+    exp_name=f'data_gumbel_mz/pendulum_disc_gumbel_muzero_ns{num_simulations}_upc{update_per_collect}_rer{reanalyze_ratio}_seed0',
     env=dict(
-        env_name='Pendulum-v1',
+        env_id='Pendulum-v1',
         continuous=False,
         manually_discretization=True,
         each_dim_disc_size=11,
@@ -40,6 +40,8 @@ pendulum_disc_gumbel_muzero_config = dict(
             latent_state_dim=128,
             self_supervised_learning_loss=True,  # NOTE: default is False.
         ),
+        # (str) The path of the pretrained model. If None, the model will be initialized by the default model.
+        model_path=None,
         cuda=True,
         env_type='not_board_games',
         game_segment_length=50,
@@ -47,7 +49,7 @@ pendulum_disc_gumbel_muzero_config = dict(
         batch_size=batch_size,
         optim_type='Adam',
         max_num_considered_actions=11,
-        lr_piecewise_constant_decay=False,
+        piecewise_decay_lr_scheduler=False,
         learning_rate=0.003,
         ssl_loss_weight=2,  # NOTE: default is 0.
         num_simulations=num_simulations,
@@ -73,10 +75,6 @@ pendulum_disc_gumbel_muzero_create_config = dict(
         type='gumbel_muzero',
         import_names=['lzero.policy.gumbel_muzero'],
     ),
-    collector=dict(
-        type='gumbel_muzero',
-        import_names=['lzero.worker.gumbel_muzero_collector'],
-    )
 )
 pendulum_disc_gumbel_muzero_create_config = EasyDict(pendulum_disc_gumbel_muzero_create_config)
 create_config = pendulum_disc_gumbel_muzero_create_config
@@ -94,4 +92,4 @@ if __name__ == "__main__":
         """
         from lzero.entry import train_muzero_with_gym_env as train_muzero
 
-    train_muzero([main_config, create_config], seed=0, max_env_step=max_env_step)
+    train_muzero([main_config, create_config], seed=0, model_path=main_config.policy.model_path, max_env_step=max_env_step)

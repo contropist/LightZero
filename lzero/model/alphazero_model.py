@@ -8,6 +8,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from ding.model import ReparameterizationHead
 from ding.torch_utils import MLP, ResBlock
 from ding.utils import MODEL_REGISTRY, SequenceType
 
@@ -31,9 +32,19 @@ class AlphaZeroModel(nn.Module):
         num_channels: int = 64,
         value_head_channels: int = 16,
         policy_head_channels: int = 16,
-        fc_value_layers: SequenceType = [32],
-        fc_policy_layers: SequenceType = [32],
+        value_head_hidden_channels: SequenceType = [32],
+        policy_head_hidden_channels: SequenceType = [32],
         value_support_size: int = 601,
+        # ==============================================================
+        # specific sampled related config
+        # ==============================================================
+        continuous_action_space: bool = False,
+        num_of_sampled_actions: int = 6,
+        sigma_type='conditioned',
+        fixed_sigma_value: float = 0.3,
+        bound_type: str = None,
+        norm_type: str = 'BN',
+        discrete_action_encoding_type: str = 'one_hot',
     ):
         """
         Overview:
@@ -55,8 +66,8 @@ class AlphaZeroModel(nn.Module):
             - num_channels (:obj:`int`): The channels of hidden states.
             - value_head_channels (:obj:`int`): The channels of value head.
             - policy_head_channels (:obj:`int`): The channels of policy head.
-            - fc_value_layers (:obj:`SequenceType`): The number of hidden layers used in value head (MLP head).
-            - fc_policy_layers (:obj:`SequenceType`): The number of hidden layers used in policy head (MLP head).
+            - value_head_hidden_channels (:obj:`SequenceType`): The number of hidden layers used in value head (MLP head).
+            - policy_head_hidden_channels (:obj:`SequenceType`): The number of hidden layers used in policy head (MLP head).
             - value_support_size (:obj:`int`): The size of categorical value.
         """
         super(AlphaZeroModel, self).__init__()
@@ -70,16 +81,35 @@ class AlphaZeroModel(nn.Module):
         self.last_linear_layer_init_zero = last_linear_layer_init_zero
         self.representation_network = representation_network
 
+        self.continuous_action_space = continuous_action_space
         self.action_space_size = action_space_size
+        # The dim of action space. For discrete action space, it's 1.
+        # For continuous action space, it is the dim of action.
+        self.action_space_dim = action_space_size if self.continuous_action_space else 1
+        assert discrete_action_encoding_type in ['one_hot', 'not_one_hot'], discrete_action_encoding_type
+        self.discrete_action_encoding_type = discrete_action_encoding_type
+        if self.continuous_action_space:
+            self.action_encoding_dim = action_space_size
+        else:
+            if self.discrete_action_encoding_type == 'one_hot':
+                self.action_encoding_dim = action_space_size
+            elif self.discrete_action_encoding_type == 'not_one_hot':
+                self.action_encoding_dim = 1
+        self.sigma_type = sigma_type
+        self.fixed_sigma_value = fixed_sigma_value
+        self.bound_type = bound_type
+        self.norm_type = norm_type
+        self.num_of_sampled_actions = num_of_sampled_actions
+
         # TODO use more adaptive way to get the flatten output size
-        flatten_output_size_for_value_head = (
+        flatten_input_size_for_value_head = (
             (
                 value_head_channels * math.ceil(self.observation_shape[1] / 16) *
                 math.ceil(self.observation_shape[2] / 16)
             ) if downsample else (value_head_channels * self.observation_shape[1] * self.observation_shape[2])
         )
 
-        flatten_output_size_for_policy_head = (
+        flatten_input_size_for_policy_head = (
             (
                 policy_head_channels * math.ceil(self.observation_shape[1] / 16) *
                 math.ceil(self.observation_shape[2] / 16)
@@ -88,17 +118,22 @@ class AlphaZeroModel(nn.Module):
 
         self.prediction_network = PredictionNetwork(
             action_space_size,
+            self.continuous_action_space,
             num_res_blocks,
             num_channels,
             value_head_channels,
             policy_head_channels,
-            fc_value_layers,
-            fc_policy_layers,
+            value_head_hidden_channels,
+            policy_head_hidden_channels,
             self.value_support_size,
-            flatten_output_size_for_value_head,
-            flatten_output_size_for_policy_head,
+            flatten_input_size_for_value_head,
+            flatten_input_size_for_policy_head,
             last_linear_layer_init_zero=self.last_linear_layer_init_zero,
             activation=activation,
+            sigma_type=self.sigma_type,
+            fixed_sigma_value=self.fixed_sigma_value,
+            bound_type=self.bound_type,
+            norm_type=self.norm_type,
         )
 
         if self.representation_network is None:
@@ -131,7 +166,7 @@ class AlphaZeroModel(nn.Module):
         logit, value = self.prediction_network(encoded_state)
         return logit, value
 
-    def compute_prob_value(self, state_batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def compute_policy_value(self, state_batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Overview:
             The computation graph of AlphaZero model to calculate action selection probability and value.
@@ -147,9 +182,7 @@ class AlphaZeroModel(nn.Module):
             - value (:obj:`torch.Tensor`): :math:`(B, 1)`, where B is batch size.
         """
         logit, value = self.forward(state_batch)
-        # construct categorical distribution to calculate probability
-        dist = torch.distributions.Categorical(logits=logit)
-        prob = dist.probs
+        prob = torch.nn.functional.softmax(logit, dim=-1)
         return prob, value
 
     def compute_logp_value(self, state_batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -178,17 +211,25 @@ class PredictionNetwork(nn.Module):
     def __init__(
             self,
             action_space_size: int,
+            continuous_action_space: bool,
             num_res_blocks: int,
             num_channels: int,
             value_head_channels: int,
             policy_head_channels: int,
-            fc_value_layers: SequenceType,
-            fc_policy_layers: SequenceType,
+            value_head_hidden_channels: SequenceType,
+            policy_head_hidden_channels: SequenceType,
             output_support_size: int,
-            flatten_output_size_for_value_head: int,
-            flatten_output_size_for_policy_head: int,
+            flatten_input_size_for_value_head: int,
+            flatten_input_size_for_policy_head: int,
             last_linear_layer_init_zero: bool = True,
             activation: Optional[nn.Module] = nn.ReLU(inplace=True),
+            # ==============================================================
+            # specific sampled related config
+            # ==============================================================
+            sigma_type='conditioned',
+            fixed_sigma_value: float = 0.3,
+            bound_type: str = None,
+            norm_type: str = 'BN',
     ) -> None:
         """
         Overview:
@@ -200,12 +241,12 @@ class PredictionNetwork(nn.Module):
             - num_channels (:obj:`int`): The channels of hidden states.
             - value_head_channels (:obj:`int`): The channels of value head.
             - policy_head_channels (:obj:`int`): The channels of policy head.
-            - fc_value_layers (:obj:`SequenceType`): The number of hidden layers used in value head (MLP head).
-            - fc_policy_layers (:obj:`SequenceType`): The number of hidden layers used in policy head (MLP head).
+            - value_head_hidden_channels (:obj:`SequenceType`): The number of hidden layers used in value head (MLP head).
+            - policy_head_hidden_channels (:obj:`SequenceType`): The number of hidden layers used in policy head (MLP head).
             - output_support_size (:obj:`int`): The size of categorical value output.
-            - flatten_output_size_for_value_head (:obj:`int`): The size of flatten hidden states, i.e. the input size \
+            - flatten_input_size_for_value_head (:obj:`int`): The size of flatten hidden states, i.e. the input size \
                 of the value head.
-            - flatten_output_size_for_policy_head (:obj:`int`): The size of flatten hidden states, i.e. the input size \
+            - flatten_input_size_for_policy_head (:obj:`int`): The size of flatten hidden states, i.e. the input size \
                 of the policy head.
             - last_linear_layer_init_zero (:obj:`bool`): Whether to use zero initializations for the last layer of \
                 value/policy mlp, default sets it to True.
@@ -213,6 +254,15 @@ class PredictionNetwork(nn.Module):
                 operation to speedup, e.g. ReLU(inplace=True).
         """
         super().__init__()
+        self.continuous_action_space = continuous_action_space
+        self.flatten_input_size_for_value_head = flatten_input_size_for_value_head
+        self.flatten_input_size_for_policy_head = flatten_input_size_for_policy_head
+        self.norm_type = norm_type
+        self.sigma_type = sigma_type
+        self.fixed_sigma_value = fixed_sigma_value
+        self.bound_type = bound_type
+        self.activation = activation
+
         self.resblocks = nn.ModuleList(
             [
                 ResBlock(in_channels=num_channels, activation=activation, norm_type='BN', res_type='basic', bias=False)
@@ -224,30 +274,44 @@ class PredictionNetwork(nn.Module):
         self.conv1x1_policy = nn.Conv2d(num_channels, policy_head_channels, 1)
         self.norm_value = nn.BatchNorm2d(value_head_channels)
         self.norm_policy = nn.BatchNorm2d(policy_head_channels)
-        self.flatten_output_size_for_value_head = flatten_output_size_for_value_head
-        self.flatten_output_size_for_policy_head = flatten_output_size_for_policy_head
-        self.fc_value = MLP(
-            in_channels=self.flatten_output_size_for_value_head,
-            hidden_channels=fc_value_layers[0],
+        self.flatten_input_size_for_value_head = flatten_input_size_for_value_head
+        self.flatten_input_size_for_policy_head = flatten_input_size_for_policy_head
+        self.fc_value_head = MLP(
+            in_channels=self.flatten_input_size_for_value_head,
+            hidden_channels=value_head_hidden_channels[0],
             out_channels=output_support_size,
-            layer_num=len(fc_value_layers) + 1,
+            layer_num=len(value_head_hidden_channels) + 1,
             activation=activation,
             norm_type='LN',
             output_activation=False,
             output_norm=False,
             last_linear_layer_init_zero=last_linear_layer_init_zero
         )
-        self.fc_policy = MLP(
-            in_channels=self.flatten_output_size_for_policy_head,
-            hidden_channels=fc_policy_layers[0],
-            out_channels=action_space_size,
-            layer_num=len(fc_policy_layers) + 1,
-            activation=activation,
-            norm_type='LN',
-            output_activation=False,
-            output_norm=False,
-            last_linear_layer_init_zero=last_linear_layer_init_zero
-        )
+
+        # sampled related core code
+        if self.continuous_action_space:
+            self.fc_policy_head = ReparameterizationHead(
+                input_size=self.flatten_input_size_for_policy_head,
+                output_size=action_space_size,
+                layer_num=len(policy_head_hidden_channels) + 1,
+                sigma_type=self.sigma_type,
+                fixed_sigma_value=self.fixed_sigma_value,
+                activation=nn.ReLU(),
+                norm_type=None,
+                bound_type=self.bound_type
+            )
+        else:
+            self.fc_policy_head = MLP(
+                in_channels=self.flatten_input_size_for_policy_head,
+                hidden_channels=policy_head_hidden_channels[0],
+                out_channels=action_space_size,
+                layer_num=len(policy_head_hidden_channels) + 1,
+                activation=activation,
+                norm_type='LN',
+                output_activation=False,
+                output_norm=False,
+                last_linear_layer_init_zero=last_linear_layer_init_zero
+            )
 
         self.activation = activation
 
@@ -276,9 +340,14 @@ class PredictionNetwork(nn.Module):
         policy = self.norm_policy(policy)
         policy = self.activation(policy)
 
-        value = value.reshape(-1, self.flatten_output_size_for_value_head)
-        policy = policy.reshape(-1, self.flatten_output_size_for_policy_head)
+        value = value.reshape(-1, self.flatten_input_size_for_value_head)
+        policy = policy.reshape(-1, self.flatten_input_size_for_policy_head)
 
-        value = self.fc_value(value)
-        logit = self.fc_policy(policy)
-        return logit, value
+        value = self.fc_value_head(value)
+
+        # sampled related core code
+        policy = self.fc_policy_head(policy)
+        if self.continuous_action_space:
+            policy = torch.cat([policy['mu'], policy['sigma']], dim=-1)
+
+        return policy, value

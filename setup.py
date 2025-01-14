@@ -11,12 +11,12 @@
 # limitations under the License.
 import os
 import re
+import sys
 from distutils.core import setup
 
 import numpy as np
+from Cython.Build import cythonize
 from setuptools import find_packages, Extension
-# from setuptools.command.build_ext import build_ext
-from Cython.Build import cythonize  # this line should be after 'from setuptools import find_packages'
 
 here = os.path.abspath(os.path.dirname(__file__))
 
@@ -25,19 +25,6 @@ def _load_req(file: str):
     with open(file, 'r', encoding='utf-8') as f:
         return [line.strip() for line in f.readlines() if line.strip()]
 
-
-# class custom_build_ext(build_ext):
-#     def build_extensions(self):
-#         # Override the compiler executables. Importantly, this
-#         # removes the "default" compiler flags that would
-#         # otherwise get passed on to to the compiler, i.e.,
-#         # distutils.sysconfig.get_var("CFLAGS").
-#         self.compiler.set_executable("compiler_so", "g++")
-#         self.compiler.set_executable("compiler_cxx", "g++")
-#         self.compiler.set_executable("linker_so", "g++")
-#         build_ext.build_extensions(self)
-
-
 requirements = _load_req('requirements.txt')
 
 _REQ_PATTERN = re.compile('^requirements-([a-zA-Z0-9_]+)\\.txt$')
@@ -45,6 +32,19 @@ group_requirements = {
     item.group(1): _load_req(item.group(0))
     for item in [_REQ_PATTERN.fullmatch(reqpath) for reqpath in os.listdir()] if item
 }
+
+# Set C++11 compile parameters according to the operating system
+extra_compile_args = []
+extra_link_args = []
+
+if sys.platform == 'win32':
+    # Use the VS compiler on Windows platform
+    extra_compile_args = ["/std:c++11"]
+    extra_link_args = ["/std:c++11"]
+else:
+    # Linux/macOS Platform
+    extra_compile_args = ["-std=c++11"]
+    extra_link_args = ["-std=c++11"]
 
 
 def find_pyx(path=None):
@@ -74,8 +74,8 @@ def find_cython_extensions(path=None):
             extname, [item],
             include_dirs=[np.get_include()],
             language="c++",
-            # extra_compile_args=["/std:c++latest"],  # only for Windows
-            # extra_link_args=["/std:c++latest"],  # only for Windows
+            extra_compile_args=extra_compile_args,
+            extra_link_args=extra_link_args,
         ))
 
     return extensions
@@ -85,9 +85,8 @@ _LINETRACE = not not os.environ.get('LINETRACE', None)
 
 setup(
     name='LightZero',
-    version='0.0.1',
+    version='0.1.0',
     description='A lightweight and efficient MCTS/AlphaZero/MuZero algorithm toolkits.',
-    # long_description=readme,
     long_description_content_type='text/markdown',
     author='opendilab',
     author_email='opendilab@pjlab.org.cn',
@@ -115,7 +114,6 @@ setup(
             linetrace=_LINETRACE,
         ),
     ),
-    # cmdclass={"build_ext": custom_build_ext},
     classifiers=[
         'Development Status :: 5 - Production/Stable',
         "Intended Audience :: Science/Research",
@@ -126,6 +124,8 @@ setup(
         'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
         'Topic :: Scientific/Engineering :: Artificial Intelligence',
     ],
 )

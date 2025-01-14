@@ -1,18 +1,7 @@
 from easydict import EasyDict
-
-# options={'PongNoFrameskip-v4', 'QbertNoFrameskip-v4', 'MsPacmanNoFrameskip-v4', 'SpaceInvadersNoFrameskip-v4', 'BreakoutNoFrameskip-v4', ...}
-env_name = 'PongNoFrameskip-v4'
-
-if env_name == 'PongNoFrameskip-v4':
-    action_space_size = 6
-elif env_name == 'QbertNoFrameskip-v4':
-    action_space_size = 6
-elif env_name == 'MsPacmanNoFrameskip-v4':
-    action_space_size = 9
-elif env_name == 'SpaceInvadersNoFrameskip-v4':
-    action_space_size = 6
-elif env_name == 'BreakoutNoFrameskip-v4':
-    action_space_size = 4
+from zoo.atari.config.atari_env_action_space_map import atari_env_action_space_map
+env_id = 'PongNoFrameskip-v4'  # You can specify any Atari game here
+action_space_size = atari_env_action_space_map[env_id]
 
 # ==============================================================
 # begin of the most frequently changed config specified by the user
@@ -30,11 +19,10 @@ reanalyze_ratio = 0.
 # ==============================================================
 
 atari_gumbel_muzero_config = dict(
-    exp_name=
-    f'data_mz_ctree/{env_name[:-14]}_gumbel_muzero_ns{num_simulations}_upc{update_per_collect}_rr{reanalyze_ratio}_seed0',
+    exp_name=f'data_gumbel_muzero/{env_id[:-14]}_gumbel_muzero_ns{num_simulations}_upc{update_per_collect}_rer{reanalyze_ratio}_seed0',
     env=dict(
         stop_value=int(1e6),
-        env_name=env_name,
+        env_id=env_id,
         obs_shape=(4, 96, 96),
         collector_env_num=collector_env_num,
         evaluator_env_num=evaluator_env_num,
@@ -51,6 +39,8 @@ atari_gumbel_muzero_config = dict(
             discrete_action_encoding_type='one_hot',
             norm_type='BN', 
         ),
+        # (str) The path of the pretrained model. If None, the model will be initialized by the default model.
+        model_path=None,
         cuda=True,
         env_type='not_board_games',
         game_segment_length=400,
@@ -59,7 +49,7 @@ atari_gumbel_muzero_config = dict(
         batch_size=batch_size,
         optim_type='SGD',
         max_num_considered_actions=action_space_size,
-        lr_piecewise_constant_decay=True,
+        piecewise_decay_lr_scheduler=True,
         learning_rate=0.2,
         num_simulations=num_simulations,
         reanalyze_ratio=reanalyze_ratio,
@@ -84,14 +74,10 @@ atari_gumbel_muzero_create_config = dict(
         type='gumbel_muzero',
         import_names=['lzero.policy.gumbel_muzero'],
     ),
-    collector=dict(
-        type='episode_muzero',
-        import_names=['lzero.worker.muzero_collector'],
-    )
 )
 atari_gumbel_muzero_create_config = EasyDict(atari_gumbel_muzero_create_config)
 create_config = atari_gumbel_muzero_create_config
 
 if __name__ == "__main__":
     from lzero.entry import train_muzero
-    train_muzero([main_config, create_config], seed=0, max_env_step=max_env_step)
+    train_muzero([main_config, create_config], seed=0, model_path=main_config.policy.model_path, max_env_step=max_env_step)
